@@ -1,0 +1,13 @@
+{
+  "id": "agents-conversation",
+  "name": "Agents Conversation",
+  "description": "Local multi-agent hub channel for OpenClaw",
+  "channels": [
+    "agents-conversation"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

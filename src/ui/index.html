@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agents Conversation</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+        background: #f6f3ee;
+        color: #1c1b1a;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        padding: 16px 24px;
+        background: linear-gradient(120deg, #f7ede2, #efe2d0);
+        border-bottom: 1px solid #e0d3c3;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: 0.5px;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 220px 1fr 240px;
+        gap: 16px;
+        padding: 16px 24px 24px;
+        flex: 1;
+        box-sizing: border-box;
+      }
+      section {
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 12px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .panel-title {
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 8px;
+        color: #6a5b4d;
+      }
+      .group-list button {
+        display: block;
+        width: 100%;
+        padding: 8px 10px;
+        margin-bottom: 6px;
+        border: 1px solid #e0d3c3;
+        border-radius: 8px;
+        background: #fbf7f2;
+        cursor: pointer;
+        text-align: left;
+      }
+      .group-list button.active {
+        background: #f1dfc7;
+        border-color: #d9c3a4;
+      }
+      .messages {
+        flex: 1;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .message {
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: #f8f2ea;
+        border: 1px solid #efe2d0;
+      }
+      .message .meta {
+        font-size: 11px;
+        color: #7a6c5a;
+        margin-bottom: 6px;
+      }
+      .message .content {
+        white-space: pre-wrap;
+        line-height: 1.4;
+      }
+      .agents-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .agent-pill {
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: #f4efe7;
+        border: 1px solid #e0d3c3;
+        font-size: 12px;
+      }
+      .empty {
+        font-size: 13px;
+        color: #8b7a66;
+      }
+      @media (max-width: 980px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Agents Conversation</h1>
+    </header>
+    <main>
+      <section>
+        <div class="panel-title">Groups</div>
+        <div class="group-list" id="groupList"></div>
+      </section>
+      <section>
+        <div class="panel-title">Conversation</div>
+        <div class="messages" id="messageList"></div>
+      </section>
+      <section>
+        <div class="panel-title">Agents</div>
+        <div class="agents-list" id="agentList"></div>
+      </section>
+    </main>
+    <script>
+      const groupList = document.getElementById("groupList");
+      const messageList = document.getElementById("messageList");
+      const agentList = document.getElementById("agentList");
+
+      let activeGroup = null;
+      let eventSource = null;
+      let reconnectTimeout = null;
+      const RECONNECT_DELAY_MS = 3000;
+
+      function renderGroups(groups) {
+        groupList.innerHTML = "";
+        if (!groups.length) {
+          groupList.innerHTML = "<div class='empty'>No groups configured.</div>";
+          return;
+        }
+        groups.forEach((id) => {
+          const btn = document.createElement("button");
+          btn.textContent = id;
+          if (id === activeGroup) {
+            btn.classList.add("active");
+          }
+          btn.onclick = () => selectGroup(id);
+          groupList.appendChild(btn);
+        });
+      }
+
+      function renderAgents(agents) {
+        agentList.innerHTML = "";
+        if (!agents || agents.length === 0) {
+          agentList.innerHTML = "<div class='empty'>No agents listed.</div>";
+          return;
+        }
+        agents.forEach((id) => {
+          const pill = document.createElement("div");
+          pill.className = "agent-pill";
+          pill.textContent = id;
+          agentList.appendChild(pill);
+        });
+      }
+
+      function renderMessages(messages) {
+        messageList.innerHTML = "";
+        messages.forEach((msg) => {
+          const wrapper = document.createElement("div");
+          wrapper.className = "message";
+
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          const date = new Date(msg.timestamp).toLocaleString();
+          meta.textContent = `${msg.senderId || msg.senderType} · ${date}`;
+
+          const content = document.createElement("div");
+          content.className = "content";
+          content.textContent = msg.content;
+
+          wrapper.appendChild(meta);
+          wrapper.appendChild(content);
+          messageList.appendChild(wrapper);
+        });
+        messageList.scrollTop = messageList.scrollHeight;
+      }
+
+      function appendMessage(msg) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "message";
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const date = new Date(msg.timestamp).toLocaleString();
+        meta.textContent = `${msg.senderId || msg.senderType} · ${date}`;
+
+        const content = document.createElement("div");
+        content.className = "content";
+        content.textContent = msg.content;
+
+        wrapper.appendChild(meta);
+        wrapper.appendChild(content);
+        messageList.appendChild(wrapper);
+        messageList.scrollTop = messageList.scrollHeight;
+      }
+
+      async function fetchGroups() {
+        const res = await fetch("/agents-conversation/groups");
+        const data = await res.json();
+        renderGroups(data.groups || []);
+        if (!activeGroup && data.groups && data.groups.length > 0) {
+          selectGroup(data.groups[0]);
+        }
+      }
+
+      function setupEventSource(groupId) {
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+          reconnectTimeout = null;
+        }
+
+        eventSource = new EventSource(`/agents-conversation/groups/${groupId}/stream`);
+        
+        eventSource.addEventListener("snapshot", (event) => {
+          const data = JSON.parse(event.data);
+          renderAgents(data.agents || []);
+          renderMessages(data.messages || []);
+        });
+        
+        eventSource.addEventListener("message", (event) => {
+          const data = JSON.parse(event.data);
+          appendMessage(data);
+        });
+
+        eventSource.addEventListener("error", () => {
+          console.warn("SSE connection error, attempting to reconnect...");
+          eventSource.close();
+          eventSource = null;
+          // Attempt to reconnect after delay
+          reconnectTimeout = setTimeout(() => {
+            if (activeGroup === groupId) {
+              setupEventSource(groupId);
+            }
+          }, RECONNECT_DELAY_MS);
+        });
+      }
+
+      async function selectGroup(groupId) {
+        activeGroup = groupId;
+        renderGroups(await getGroups());
+
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+          reconnectTimeout = null;
+        }
+
+        try {
+          const snapshot = await fetch(`/agents-conversation/groups/${groupId}/messages`).then((r) => r.json());
+          renderAgents(snapshot.agents || []);
+          renderMessages(snapshot.messages || []);
+        } catch (err) {
+          console.error("Failed to fetch group snapshot:", err);
+          messageList.innerHTML = `<div class='empty'>Failed to load messages: ${err.message}</div>`;
+          return;
+        }
+
+        setupEventSource(groupId);
+      }
+
+      async function getGroups() {
+        const res = await fetch("/agents-conversation/groups");
+        const data = await res.json();
+        return data.groups || [];
+      }
+
+      async function initializeUI() {
+        try {
+          await fetchGroups();
+          // Periodically refresh groups list
+          setInterval(fetchGroups, 5000);
+        } catch (err) {
+          groupList.innerHTML = `<div class='empty'>Failed to load groups: ${err.message}</div>`;
+        }
+      }
+
+      initializeUI();
+    </script>
+  </body>
+</html>

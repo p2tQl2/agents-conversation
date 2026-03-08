@@ -1,0 +1,33 @@
+{
+  "name": "@openclaw/agents-conversation",
+  "version": "0.1.0",
+  "description": "Local multi-agent hub channel plugin for OpenClaw - enables multiple agents to communicate within a shared group context",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "channel",
+    "multi-agent",
+    "conversation",
+    "agents"
+  ],
+  "author": "OpenClaw Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/p2tQl2/agents-conversation.git"
+  },
+  "bugs": {
+    "url": "https://github.com/p2tQl2/agents-conversation/issues"
+  },
+  "homepage": "https://github.com/p2tQl2/agents-conversation#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "postinstall": "node scripts/postinstall.js"
+  }
+}

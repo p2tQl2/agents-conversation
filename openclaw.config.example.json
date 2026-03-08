@@ -1,0 +1,13 @@
+{
+  "channels": {
+    "agents-conversation": {
+      "enabled": true,
+      "port": 29080,
+      "bind": "127.0.0.1",
+      "maxMessages": 200,
+      "contextWindow": 40,
+      "maxDepth": 4,
+      "availableAgents": ["agent-a", "agent-b", "agent-c"]
+    }
+  }
+}
