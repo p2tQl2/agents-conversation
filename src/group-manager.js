@@ -46,7 +46,7 @@ export function appendGroupMessage({ config, groupId, senderType, senderId, cont
     }
     group.duplicateStats.total += 1;
     group.duplicateStats.last = duplicateEntry;
-    logger.debug("Agents Conversion duplicate message detected", {
+    logger.debug("Agents Conversation duplicate message detected", {
       groupId,
       senderId,
       senderType,
@@ -69,7 +69,7 @@ export function appendGroupMessage({ config, groupId, senderType, senderId, cont
     }
   }
 
-  logger.info("Agents Conversion message appended", {
+  logger.info("Agents Conversation message appended", {
     groupId,
     senderId,
     senderType,
@@ -77,7 +77,7 @@ export function appendGroupMessage({ config, groupId, senderType, senderId, cont
     depth: message.depth,
     subscribers: group.subscribers.size,
   });
-  logger.debug("Agents Conversion message debug", {
+  logger.debug("Agents Conversation message debug", {
     groupId,
     messageId: message.id,
     contentLength: message.content.length,
@@ -111,6 +111,12 @@ export function getGroupSnapshot({ config, groupId }) {
     agents: Array.from(group.agents),
     contextWindow: group.contextWindow,
     maxMessages: group.maxMessages,
+    totalDispatchBudget: group.totalDispatchBudget,
+    convergenceWarningRatio: group.convergenceWarningRatio,
+    relayFanout: group.relayFanout,
+    maxRelayRounds: group.maxRelayRounds,
+    relayRoundsUsed: group.relayRoundsUsed,
+    remainingRelayRounds: Math.max(0, group.maxRelayRounds - group.relayRoundsUsed),
     messages: group.messages.slice(),
   };
 }
@@ -148,18 +154,36 @@ export function buildContextText({ config, groupId, excludeMessageId }) {
     .join("\n");
 }
 
-export function getIncrementalConversation({ config, groupId }) {
+export function getIncrementalConversation({ config, groupId, cursor, clientId }) {
   const group = ensureGroup(groupId, config);
-  const lastIndex = group.lastQueriedMessageIndex;
+  const resolvedCursor = typeof cursor === "string" ? cursor.trim() : "";
+  const resolvedClientId = typeof clientId === "string" ? clientId.trim() : "";
   const currentIndex = group.messages.length - 1;
 
-  // Get messages from lastIndex+1 to currentIndex (inclusive)
-  const startIdx = Math.max(0, lastIndex + 1);
+  let startIdx = 0;
+  let shouldUpdateState = false;
+
+  if (resolvedCursor) {
+    const cursorIndex = group.messages.findIndex((message) => message.id === resolvedCursor);
+    startIdx = Math.max(0, cursorIndex + 1);
+  } else if (resolvedClientId) {
+    const lastIndex = group.lastQueriedMessageIndexByClient?.get(resolvedClientId) ?? -1;
+    startIdx = Math.max(0, lastIndex + 1);
+    shouldUpdateState = true;
+  } else {
+    const lastIndex = group.lastQueriedMessageIndex;
+    startIdx = Math.max(0, lastIndex + 1);
+    shouldUpdateState = true;
+  }
+
   const newMessages = group.messages.slice(startIdx);
 
-  // Update the last queried index
-  if (newMessages.length > 0) {
-    group.lastQueriedMessageIndex = currentIndex;
+  if (shouldUpdateState && newMessages.length > 0) {
+    if (resolvedClientId) {
+      group.lastQueriedMessageIndexByClient?.set(resolvedClientId, currentIndex);
+    } else {
+      group.lastQueriedMessageIndex = currentIndex;
+    }
   }
 
   // Format messages as text

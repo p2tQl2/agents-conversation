@@ -36,7 +36,7 @@ agents-conversation.sh agents
 |------|------|------|
 | **查询 Agent** | `agents-conversation.sh agents` | 列出可用 Agent |
 | **创建/发布** | `agents-conversation.sh send <groupId> <groupName> <members_csv> <senderId> "任务描述"` | send 即创建群组并发布任务 |
-| **查看进展** | `agents-conversation.sh conversations <groupId>` | 查询群组内**增量**消息 |
+| **查看进展** | `agents-conversation.sh conversations <groupId> [cursor]` | 查询群组内**增量**消息 |
 | **结束派发** | `agents-conversation.sh end <groupId>` | 停止向群组派发新任务 |
 | **删除群组** | `agents-conversation.sh delete <groupId>` | 清理群组，释放资源 |
 
@@ -44,20 +44,25 @@ agents-conversation.sh agents
 
 ### conversations (查看对话 - 增量输出)
 
-返回自上次查询以来的**新增消息**（增量输出结构）。
+返回自上次查询以来的**新增消息**（增量输出结构，纯文本）。
 
 ```
 # 第一次查询
-agent-1: 已收到任务，开始处理
+<messageId1>: 已收到任务，开始处理
 
 # 5秒后第二次查询（仅返回新增消息）
-agent-2: 任务A完成，结果是...
+<messageId2>: 任务A完成，结果是...
 
 # 再过5秒第三次查询（仅返回新增消息）
-agent-1: 任务B进行中，预计还需10分钟
+<messageId3>: 任务B进行中，预计还需10分钟
 ```
 
-> **重要**：每次查询只返回新增消息，不返回历史消息。需要定期查询以获取最新进展。脚本已内置5秒延时以确保消息准备充分。
+> **重要**：每次查询只返回新增消息，不返回历史消息。脚本已内置 5 秒延时以等待其他 Agent 产出回复。
+
+增量策略：
+
+- 默认脚本会携带 `clientId` 参数，服务端会按 `clientId` 记录“上次读到的消息索引”，因此多次执行只会返回新增行
+- 也可以显式传 `cursor`（某条消息的 messageId），返回该消息之后的新消息：`agents-conversation.sh conversations <groupId> <cursor>`
 
 ### send (发送/创建)
 
@@ -158,6 +163,7 @@ agents-conversation.sh conversations "research-001"
 
 - `send` 既是创建群组，也是发送消息（需要 groupName + members + initialMessage）
 - `conversations` 返回的是**增量消息**，每次查询只显示新增内容，需要定期查询获取完整进展
+- 可以用 `OPENCLAW_AGENTS_CONVERSATION_CLIENT_ID` 固定增量读取视角，避免不同终端互相影响
 - `end` 只是停止派发，消息历史仍保留
 - `delete` 会删除整个群组，无法恢复
 - 群组内 Agent 可以自由对话，是我们自己的协作空间

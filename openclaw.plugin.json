@@ -5,6 +5,9 @@
   "channels": [
     "agents-conversation"
   ],
+  "skills": [
+    "skill/agents-conversation"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

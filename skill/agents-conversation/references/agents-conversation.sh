@@ -2,20 +2,35 @@
 set -euo pipefail
 
 BASE_URL="${OPENCLAW_AGENTS_CONVERSATION_URL:-http://127.0.0.1:29080/agents-conversation}"
+CLIENT_ID="${OPENCLAW_AGENTS_CONVERSATION_CLIENT_ID:-${USER:-user}@${HOSTNAME:-localhost}}"
+CLIENT_ID="${CLIENT_ID//[[:space:]]/_}"
+
+json_escape() {
+  local input="${1-}"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import json, sys
+print(json.dumps(sys.stdin.read()))
+PY
+    return 0
+  fi
+  printf '%s' "$input" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g' -e ':a;N;$!ba;s/\n/\\n/g'
+}
 
 usage() {
   cat <<'EOF'
 Usage:
-  agents-local-hub-api.sh agents
-  agents-local-hub-api.sh groups
-  agents-local-hub-api.sh conversations <groupId>
-  agents-local-hub-api.sh send <groupId> <groupName> <members_csv> <senderId> <initialMessage>
-  agents-local-hub-api.sh end <groupId>
-  agents-local-hub-api.sh delete <groupId>
-  agents-local-hub-api.sh debug <groupId>
+  agents-conversation.sh agents
+  agents-conversation.sh groups
+  agents-conversation.sh conversations <groupId> [cursor]
+  agents-conversation.sh send <groupId> <groupName> <members_csv> <senderId> <initialMessage>
+  agents-conversation.sh end <groupId>
+  agents-conversation.sh delete <groupId>
+  agents-conversation.sh debug <groupId>
 
 Env:
   OPENCLAW_AGENTS_CONVERSATION_URL  Base URL (default: http://127.0.0.1:29080/agents-conversation)
+  OPENCLAW_AGENTS_CONVERSATION_CLIENT_ID  Stable client id for incremental conversation polling
 EOF
 }
 
@@ -40,8 +55,14 @@ case "$cmd" in
       exit 1
     fi
     group_id="$1"
+    cursor="${2:-}"
     sleep 5
-    curl -sS "${BASE_URL}/groups/${group_id}/conversations"
+    url="${BASE_URL}/groups/${group_id}/conversations?clientId=${CLIENT_ID}"
+    if [[ -n "${cursor}" ]]; then
+      cursor="${cursor//[[:space:]]/}"
+      url="${url}&cursor=${cursor}"
+    fi
+    curl -sS "$url"
     ;;
   send)
     if [[ $# -lt 5 ]]; then
@@ -65,9 +86,12 @@ case "$cmd" in
         json_members+="\"${trimmed}\""
       fi
     done
+    group_name_json="$(printf '%s' "$group_name" | json_escape)"
+    sender_id_json="$(printf '%s' "$sender_id" | json_escape)"
+    text_json="$(printf '%s' "$text" | json_escape)"
     curl -sS -X POST "${BASE_URL}/groups/${group_id}/messages" \
       -H "Content-Type: application/json" \
-      -d "{\"groupName\":\"${group_name}\",\"members\":[${json_members}],\"initialMessage\":\"${text}\",\"senderId\":\"${sender_id}\"}"
+      -d "{\"groupName\":${group_name_json},\"members\":[${json_members}],\"initialMessage\":${text_json},\"senderId\":${sender_id_json}}"
     ;;
   end)
     if [[ $# -lt 1 ]]; then

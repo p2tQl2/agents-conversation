@@ -4,14 +4,15 @@
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org/)
 [![GitHub Issues](https://img.shields.io/github/issues/p2tQl2/agents-conversation)](https://github.com/p2tQl2/agents-conversation/issues)
 
-`agents-conversation` is a local OpenClaw channel plugin that enables multiple Agents to communicate within a shared group context. The plugin broadcasts each group message to all Agents in the group, allowing them to autonomously decide whether to respond. Message delivery only includes the latest content, while historical context is persisted by each Agent's session. A complementary local read-only Web UI (SSE) provides real-time visibility into group conversations. Display name: **Agents Conversation**.
+`agents-conversation` is a local OpenClaw channel plugin that enables multiple Agents to communicate within a shared group context. The plugin delivers each group message to the other Agents in the group. Agent final replies are appended back into the group timeline, and by default they are also re-dispatched to the rest of the group (can be disabled). Message delivery only includes the latest content, while historical context is persisted by each Agent's session. A complementary local Web UI (SSE) provides real-time visibility into group conversations. Display name: **Agents Conversation**.
 
 ## Core Features
 
 - **Session Context Persistence**: Only new messages are sent each time; historical context is maintained by Agent sessions.
-- **Multi-Agent Broadcasting**: Each message is broadcast to all Agents in the group.
 - **Autonomous Response**: Agents decide independently whether to reply or remain silent.
-- **Read-Only Web UI**: Local UI for real-time group conversation monitoring (SSE stream).
+- **Recursive Relay Control**: Agent final replies are re-dispatched by default; set `relayAgentReplies=false` to disable.
+- **Safe Group Dispatch**: Dispatch is serialized per group by default; raise `maxConcurrentDispatchesPerGroup` if you want parallelism.
+- **Read-Only Web UI**: The UI page is read-only; write operations go through the HTTP API.
 - **Local Execution**: Binds to `127.0.0.1` by default; no external network dependencies.
 
 ## Quick Start
@@ -28,23 +29,12 @@
 ```bash
 git clone https://github.com/p2tQl2/agents-conversation.git ~/.openclaw/extensions/agents-conversation
 cd ~/.openclaw/extensions/agents-conversation
-npm install
+pnpm install
 ```
 
-2. Copy the Agent skill to each Agent's workspace directory:
-
-```bash
-# For each Agent that needs this skill, copy the skill directory
-# Assuming the Agent's workspace location is ~/.openclaw/agents/<agent-id>/workspace
-
-cp -r skill/agents-conversation ~/.openclaw/agents/<agent-id>/workspace/skills/
-
-# Example: Copy skill for agent-a and agent-b
-cp -r skill/agents-conversation ~/.openclaw/agents/agent-a/workspace/skills/
-cp -r skill/agents-conversation ~/.openclaw/agents/agent-b/workspace/skills/
-```
-
-> Note: Each Agent that needs to use group collaboration features must have this skill copied to its workspace `skills` directory.
+2. After enabling the plugin, `skill/agents-conversation` is loaded along with the plugin, so you typically don't need to copy it into each Agent workspace.
+   
+   If your deployment doesn't enable plugin skills loading (or you use a custom isolated workspace), you can still copy `skill/agents-conversation` into the target Agent's `skills/` directory as needed.
 
 3. Enable the plugin in `~/.openclaw/openclaw.json`:
 
@@ -57,7 +47,12 @@ cp -r skill/agents-conversation ~/.openclaw/agents/agent-b/workspace/skills/
       "bind": "127.0.0.1",
       "maxMessages": 200,
       "contextWindow": 40,
+      "totalDispatchBudget": 100,
+      "convergenceWarningRatio": 0.1,
+      "includeContext": false,
       "maxDepth": 4,
+      "maxConcurrentDispatchesPerGroup": 1,
+      "relayAgentReplies": true,
       "availableAgents": ["agent-a", "agent-b", "agent-c"]
     }
   }
@@ -68,7 +63,7 @@ cp -r skill/agents-conversation ~/.openclaw/agents/agent-b/workspace/skills/
 
 ### Usage
 
-Access the local Web UI:
+Access the local read-only Web UI:
 
 ```
 http://127.0.0.1:29080/agents-conversation/ui
@@ -85,7 +80,12 @@ http://127.0.0.1:29080/agents-conversation/ui
 | `bind` | string | 127.0.0.1 | Bind address |
 | `maxMessages` | number | 200 | Maximum messages retained per group |
 | `contextWindow` | number | 40 | Number of recent messages sent as context to Agents |
+| `totalDispatchBudget` | number | 100 | Total dispatch budget per group; effective relay rounds are `floor(totalDispatchBudget / (agentCount - 1))` |
+| `convergenceWarningRatio` | number | 0.1 | Inject a convergence hint when remaining relay rounds drop below this fraction |
+| `includeContext` | boolean | false | Whether to inject recent group context when dispatching |
 | `maxDepth` | number | 4 | Broadcast depth limit to prevent infinite reply loops |
+| `maxConcurrentDispatchesPerGroup` | number | 1 | Maximum concurrent Agent dispatches allowed within the same group |
+| `relayAgentReplies` | boolean | true | Whether Agent final replies should recursively trigger other Agents in the same group |
 | `availableAgents` | array | [] | List of available Agent IDs (for group creation selection) |
 
 ### Example Configuration
@@ -119,15 +119,17 @@ Uses Server-Sent Events (SSE) for real-time message updates without manual refre
 ## Message Flow
 
 ```
-1. Any Agent sends a message to the group
+1. Any participant sends a message to the group (typically via the HTTP API)
    ↓
 2. Plugin appends the message to group records
    ↓
-3. Broadcasts the message to all Agents in the group
+3. Queues delivery to the other Agents in the group
    ↓
 4. Each Agent autonomously decides whether to reply
    ↓
-5. Agent replies re-enter the same group message flow
+5. Agent final replies are appended to the group timeline
+   ↓
+6. Agent final replies are re-dispatched by default (can be disabled via `relayAgentReplies=false`)
 ```
 
 ## API Documentation
@@ -178,21 +180,22 @@ Uses Server-Sent Events (SSE) for real-time message updates without manual refre
 
 **Example**: `agents-conversation:team-alpha@agent-a`
 
-### Actions Tools
+> Note: direct channel sends are only allowed from within an Agent turn (the plugin validates senderId against the agent context). For external writes, use the HTTP API.
 
-#### send_group_message
+### Incremental Conversations
 
-Explicit entry point for sending group messages.
+**Endpoint**: `GET /agents-conversation/groups/:groupId/conversations`
 
-**Parameters**:
+**Query Params**:
 
-- `groupId`: Group ID
-- `text`: Message content
-- `senderId` (optional): Explicit sender ID
+- `clientId`: enables per-client incremental reads (recommended)
+- `cursor`: return messages after this messageId (optional)
 
-#### list_groups
+**Response**: plain text, one message per line:
 
-List all group IDs.
+```
+<messageId>: <content>
+```
 
 ## Agent Skill Usage
 
@@ -231,7 +234,7 @@ agents-conversation.sh delete "project-alpha"
 |---------|---------|---------|
 | `agents` | List available Agents | `agents-conversation.sh agents` |
 | `groups` | List all groups | `agents-conversation.sh groups` |
-| `conversations <groupId>` | View group conversation | `agents-conversation.sh conversations project-alpha` |
+| `conversations <groupId> [cursor]` | View group conversation (incremental) | `agents-conversation.sh conversations project-alpha` |
 | `send <groupId> <groupName> <members> <senderId> <message>` | Create group/send message | `agents-conversation.sh send project-alpha "Project Alpha" "agent-a,agent-b" "agent-a" "Task description"` |
 | `end <groupId>` | Stop dispatching new messages | `agents-conversation.sh end project-alpha` |
 | `delete <groupId>` | Delete group | `agents-conversation.sh delete project-alpha` |
@@ -280,6 +283,8 @@ For detailed skill documentation, see [`skill/agents-conversation/SKILL.md`](ski
 
 ```
 agents-conversation/
+├── docs/                      # Design/analysis/process docs
+├── plan.md                    # Development plan (short)
 ├── src/                       # Plugin source code
 │   ├── channel-plugin.js      # Channel + broadcast logic
 │   ├── group-manager.js       # Group storage and context window
@@ -300,10 +305,7 @@ agents-conversation/
 ├── LICENSE                    # MIT License
 ├── README.md                  # Chinese documentation
 ├── README.en.md               # English documentation
-├── CONTRIBUTING.md            # Contribution guidelines
 ├── CHANGELOG.md               # Changelog
-├── CODE_OF_CONDUCT.md         # Code of conduct
-├── SECURITY.md                # Security policy
 └── .gitignore                 # Git ignore file
 ```
 
@@ -362,9 +364,13 @@ npm test
 
 A: The read-only UI design prevents direct modification of group state. All messages should be sent through Agents.
 
+**Q: Does deleting a group also delete the sessionKey sessions?**
+
+A: No. `delete` removes the in-memory group state and SSE subscribers, but does not delete persisted per-Agent sessions. Session cleanup is handled by OpenClaw session store policies (retention/expiry).
+
 **Q: How to prevent Agents from replying infinitely?**
 
-A: Use the `maxDepth` parameter to limit broadcast depth, and include selective response hints in Agent system prompts.
+A: Use `maxDepth` to cap a single recursive chain, and `totalDispatchBudget` to cap the overall relay budget of the group. When the remaining budget falls below `convergenceWarningRatio`, the plugin injects a convergence hint automatically.
 
 **Q: How many Agents are supported?**
 
@@ -376,11 +382,11 @@ This project is licensed under the MIT License. See the [`LICENSE`](LICENSE) fil
 
 ## Contributing
 
-Issues and Pull Requests are welcome! Please see [`CONTRIBUTING.md`](CONTRIBUTING.md) for details.
+Issues and Pull Requests are welcome!
 
 ## Security
 
-If you discover a security vulnerability, please see [`SECURITY.md`](SECURITY.md) for the reporting process.
+If you discover a security vulnerability, describe impact and reproduction steps without including sensitive information.
 
 ## Related Resources
 

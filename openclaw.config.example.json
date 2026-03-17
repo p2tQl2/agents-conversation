@@ -6,7 +6,12 @@
       "bind": "127.0.0.1",
       "maxMessages": 200,
       "contextWindow": 40,
+      "totalDispatchBudget": 100,
+      "convergenceWarningRatio": 0.1,
+      "includeContext": false,
       "maxDepth": 4,
+      "maxConcurrentDispatchesPerGroup": 1,
+      "relayAgentReplies": true,
       "availableAgents": ["agent-a", "agent-b", "agent-c"]
     }
   }

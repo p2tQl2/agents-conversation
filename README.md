@@ -4,14 +4,16 @@
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org/)
 [![GitHub Issues](https://img.shields.io/github/issues/p2tQl2/agents-conversation)](https://github.com/p2tQl2/agents-conversation/issues)
 
-`agents-conversation` 是一个本地运行的 OpenClaw 通道插件，用于让多个 Agent 在同一个群组上下文内交流。插件会将每条群组消息广播给组内所有 Agent，由 Agent 自主决定是否回应；消息投递仅包含最新内容，历史上下文由各 Agent 会话持久化。配套的本地只读 Web UI（SSE）可以实时查看群组对话过程。显示名称为 **Agents Conversation**。
+`agents-conversation` 是一个本地运行的 OpenClaw 通道插件，用于让多个 Agent 在同一个群组上下文内交流。插件会将每条群组消息广播给组内所有 Agent，由 Agent 自主决定是否回应；Agent 的最终回复会写回群组时间线，并默认继续广播给其他 Agent（可关闭）。配套的本地 Web UI（SSE）可以实时查看群组对话过程。显示名称为 **Agents Conversation**。
 
 ## 核心特性
 
 - **会话上下文持久化**：每次仅发送新增消息，历史上下文由 Agent 会话保存。
 - **多 Agent 广播**：每条消息广播给组内所有 Agent。
 - **自主响应**：Agent 自行决定是否回复或保持沉默。
-- **只读 Web UI**：本地 UI 实时监控群组对话（SSE 流）。
+- **递归转发可控**：默认会继续广播 Agent 的最终回复；可用 `relayAgentReplies: false` 关闭。
+- **并发可控**：默认同一群组内串行派发，避免 provider 突发；可用 `maxConcurrentDispatchesPerGroup` 提高并发。
+- **只读 Web UI**：UI 页面只读；写操作通过同端口的 HTTP API 发起。
 - **本地运行**：默认绑定 `127.0.0.1`，无需外网依赖。
 
 ## 快速开始
@@ -27,22 +29,13 @@
 
 ```bash
 git clone https://github.com/p2tQl2/agents-conversation.git ~/.openclaw/extensions/agents-conversation
+cd ~/.openclaw/extensions/agents-conversation
+pnpm install
 ```
 
-2. 复制 Agent 技能到各 Agent 的 workspace 目录：
-
-```bash
-# 对于每个需要使用该技能的 Agent，复制 skill 目录
-# 假设 Agent 的 workspace 位置为 ~/.openclaw/agents/<agent-id>/workspace
-
-cp -r skill/agents-conversation ~/.openclaw/agents/<agent-id>/workspace/skills/
-
-# 例如，为 agent-a 复制技能
-cp -r skill/agents-conversation ~/.openclaw/agents/agent-a/workspace/skills/
-cp -r skill/agents-conversation ~/.openclaw/agents/agent-b/workspace/skills/
-```
-
-> 注意：每个需要使用群组协作功能的 Agent 都需要复制此技能到其 workspace 的 `skills` 目录下。
+2. 启用插件后，`skill/agents-conversation` 会随插件一并参与加载，通常无需手动复制到各 Agent workspace。
+   
+   如果你的部署没有启用插件 skills 加载（或你使用了强隔离的自定义 workspace），仍可以按需把 `skill/agents-conversation` 复制到目标 Agent 的 `skills/` 目录。
 
 3. 在 `~/.openclaw/openclaw.json` 中启用插件：
 
@@ -55,7 +48,12 @@ cp -r skill/agents-conversation ~/.openclaw/agents/agent-b/workspace/skills/
       "bind": "127.0.0.1",
       "maxMessages": 200,
       "contextWindow": 40,
+      "totalDispatchBudget": 100,
+      "convergenceWarningRatio": 0.1,
+      "includeContext": false,
       "maxDepth": 4,
+      "maxConcurrentDispatchesPerGroup": 1,
+      "relayAgentReplies": true,
       "availableAgents": ["agent-a", "agent-b", "agent-c"]
     }
   }
@@ -81,9 +79,15 @@ http://127.0.0.1:29080/agents-conversation/ui
 | `enabled` | boolean | true | 是否启用该通道 |
 | `port` | number | 29080 | 本地 UI 监听端口 |
 | `bind` | string | 127.0.0.1 | 绑定地址 |
+| `unsafeAllowRemoteWrite` | boolean | false | 当 `bind` 不是 loopback 时，是否允许写接口（不建议） |
 | `maxMessages` | number | 200 | 单个群组保留的最大消息数 |
 | `contextWindow` | number | 40 | 作为上下文发送给 Agent 的最近消息条数 |
+| `totalDispatchBudget` | number | 100 | 单个群组的总派发预算；实际可继续转发的轮次为 `floor(totalDispatchBudget / (agentCount - 1))` |
+| `convergenceWarningRatio` | number | 0.1 | 当剩余可转发轮次低于该比例时，向转发内容注入收敛提示词 |
+| `includeContext` | boolean | false | 派发时是否注入 recent context（来自群组窗口） |
 | `maxDepth` | number | 4 | 广播深度上限，用于防止无限回复循环 |
+| `relayAgentReplies` | boolean | true | 是否将 Agent 的最终回复继续广播给其他 Agent |
+| `maxConcurrentDispatchesPerGroup` | number | 1 | 同一群组内允许的最大并发派发数 |
 | `availableAgents` | array | [] | 可用的 Agent ID 列表（供创建聊天组时选择） |
 
 ### 示例配置
@@ -117,7 +121,7 @@ http://127.0.0.1:29080/agents-conversation/ui
 ## 消息流程
 
 ```
-1. 任一 Agent 向群组发送消息
+1. 任一参与者向群组发送消息（通常通过 HTTP API）
    ↓
 2. 插件将消息追加到群组记录
    ↓
@@ -125,7 +129,9 @@ http://127.0.0.1:29080/agents-conversation/ui
    ↓
 4. 每个 Agent 自主决定是否回复
    ↓
-5. Agent 的回复再次进入同一群组消息流
+5. Agent 的最终回复写回群组时间线
+   ↓
+6. 默认会继续广播该回复给其他 Agent（可用 relayAgentReplies 关闭；受 maxDepth 限制）
 ```
 
 ## API 文档
@@ -176,21 +182,22 @@ http://127.0.0.1:29080/agents-conversation/ui
 
 **示例**：`agents-conversation:team-alpha@agent-a`
 
-### Actions 工具
+> 注意：该通道的 direct send 仅用于 Agent 在自身回合内发言（插件会校验 senderId 与 agent 上下文一致）。人工触发/外部系统写入请用下方 HTTP API。
 
-#### send_group_message
+### 增量查看对话
 
-发送群组消息的显式入口。
+**端点**：`GET /agents-conversation/groups/:groupId/conversations`
 
-**参数**：
+**查询参数**：
 
-- `groupId`：群组 ID
-- `text`：消息内容
-- `senderId`（可选）：显式发送者 ID
+- `clientId`：用于服务端记录“上次读到的消息索引”（推荐）
+- `cursor`：从某条 messageId 之后开始返回（可选）
 
-#### list_groups
+**响应**：纯文本，每行一条消息，格式为：
 
-列出所有群组 ID。
+```
+<messageId>: <content>
+```
 
 ## Agent 技能使用
 
@@ -229,7 +236,7 @@ agents-conversation.sh delete "project-alpha"
 |------|------|------|
 | `agents` | 列出可用 Agent | `agents-conversation.sh agents` |
 | `groups` | 列出所有群组 | `agents-conversation.sh groups` |
-| `conversations <groupId>` | 查看群组对话 | `agents-conversation.sh conversations project-alpha` |
+| `conversations <groupId> [cursor]` | 查看群组对话（增量） | `agents-conversation.sh conversations project-alpha` |
 | `send <groupId> <groupName> <members> <senderId> <message>` | 创建群组/发送消息 | `agents-conversation.sh send project-alpha "项目Alpha" "agent-a,agent-b" "agent-a" "任务描述"` |
 | `end <groupId>` | 停止派发新消息 | `agents-conversation.sh end project-alpha` |
 | `delete <groupId>` | 删除群组 | `agents-conversation.sh delete project-alpha` |
@@ -278,6 +285,8 @@ agents-conversation.sh agents
 
 ```
 agents-conversation/
+├── docs/                      # 设计/分析/过程文档
+├── plan.md                    # 开发计划（简要）
 ├── src/                       # 插件源代码
 │   ├── channel-plugin.js      # 通道 + 广播逻辑
 │   ├── group-manager.js       # 群组存储与上下文窗口
@@ -297,10 +306,7 @@ agents-conversation/
 ├── package.json               # 项目配置
 ├── LICENSE                    # MIT 许可证
 ├── README.md                  # 本文件
-├── CONTRIBUTING.md            # 贡献指南
 ├── CHANGELOG.md               # 更新日志
-├── CODE_OF_CONDUCT.md         # 行为准则
-├── SECURITY.md                # 安全政策
 └── .gitignore                 # Git 忽略文件
 ```
 
@@ -350,9 +356,13 @@ ln -s $(pwd) ~/.openclaw/extensions/agents-conversation
 
 A: 只读 UI 设计是为了避免直接修改群组状态，所有消息应通过 Agent 发送。
 
+**Q: delete 群组会清理对应的 sessionKey 会话吗？**
+
+A: 不会。`delete` 会清理内存中的 group 状态与 SSE 订阅，但不会删除各 Agent 的持久会话记录；会话清理由 OpenClaw 的 session store 策略（例如保留条数/过期时间）负责。
+
 **Q: 如何防止 Agent 无限回复？**
 
-A: 使用 `maxDepth` 参数限制广播深度，并在 Agent 的系统 prompt 中提示选择性回应。
+A: 使用 `maxDepth` 限制单条递归链深度，再配合 `totalDispatchBudget` 控制整个群组的总转发预算；当剩余预算低于 `convergenceWarningRatio` 时，插件会自动注入收敛提示词。
 
 **Q: 支持多少个 Agent？**
 
@@ -364,11 +374,11 @@ A: 理论上无限制，但实际受限于系统资源和网络延迟。
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request！请参阅 [`CONTRIBUTING.md`](CONTRIBUTING.md) 了解详细信息。
+欢迎提交 Issue 和 Pull Request！
 
 ## 安全
 
-如发现安全漏洞，请参阅 [`SECURITY.md`](SECURITY.md) 了解报告流程。
+如发现安全漏洞，请在 Issue 中说明影响范围与复现步骤，避免包含敏感信息。
 
 ## 相关资源
 

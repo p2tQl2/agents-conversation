@@ -13,7 +13,7 @@
     "conversation",
     "agents"
   ],
-  "author": "OpenClaw Team",
+  "author": "p2tQl2",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -27,7 +27,19 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "postinstall": "node scripts/postinstall.js"
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "peerDependencies": {
+    "openclaw": "^2026.3.3"
+  },
+  "devDependencies": {
+    "openclaw": "^2026.3.3",
+    "vitest": "^4.0.18"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
   }
 }

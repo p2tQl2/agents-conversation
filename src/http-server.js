@@ -3,11 +3,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { logger } from "./logger.js";
 import { addSubscriber, getGroupSnapshot, listGroups, getIncrementalConversation } from "./group-manager.js";
-import { ingestGroupMessage } from "./channel-plugin.js";
+import { ingestGroupMessage } from "./orchestrator.js";
 import {
+  buildGroupDebugTelemetry,
   createGroup,
   ensureGroup,
   getAvailableAgents,
+  getChannelConfig,
   getOpenclawConfig,
   groups,
   serverState,
@@ -59,7 +61,16 @@ async function readJsonBody(req) {
   return JSON.parse(raw);
 }
 
-export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
+function sendReadOnlyError(res) {
+  sendJson(res, 405, { error: "read-only UI server" });
+}
+
+export function createLocalGroupHttpHandler(
+  basePath = "/agents-conversation",
+  options = {},
+) {
+  const readOnly = options.readOnly === true;
+
   return async (req, res) => {
     const url = new URL(req.url || "", "http://localhost");
     const pathname = url.pathname;
@@ -82,6 +93,10 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
     }
 
     if (pathname === `${basePath}/groups`) {
+      if (req.method && req.method !== "GET") {
+        sendJson(res, 405, { error: "method not allowed" });
+        return true;
+      }
       const groups = listGroups(getConfig());
       sendJson(res, 200, { groups });
       return true;
@@ -105,6 +120,10 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
       }
 
       if (req.method === "POST") {
+        if (readOnly) {
+          sendReadOnlyError(res);
+          return true;
+        }
         let body = null;
         try {
           body = await readJsonBody(req);
@@ -114,11 +133,17 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
         }
 
         const senderId = body?.senderId ?? body?.from ?? null;
-        const senderType = body?.senderType ?? "agent";
+        const senderType = body?.senderType ?? "user";
         const content = body?.initialMessage ?? body?.text ?? body?.content ?? "";
         const groupName = body?.groupName ?? body?.name ?? null;
         const members = body?.members ?? body?.agents ?? null;
         const depth = Number.isFinite(body?.depth) ? body.depth : 0;
+        const totalDispatchBudget = Number.isFinite(body?.totalDispatchBudget)
+          ? body.totalDispatchBudget
+          : undefined;
+        const convergenceWarningRatio = Number.isFinite(body?.convergenceWarningRatio)
+          ? body.convergenceWarningRatio
+          : undefined;
         const metadata = body?.metadata ?? undefined;
         const availableAgents = getAvailableAgents(getConfig());
 
@@ -152,6 +177,8 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
           name: groupName,
           agents: members,
           config: getConfig(),
+          totalDispatchBudget,
+          convergenceWarningRatio,
         });
 
         const message = await ingestGroupMessage({
@@ -164,7 +191,7 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
           metadata,
         });
 
-        logger.info("Agents Conversion HTTP message ingested", {
+        logger.info("Agents Conversation HTTP message ingested", {
           groupId,
           senderId,
           senderType,
@@ -196,8 +223,9 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
         return true;
       }
 
-      // Always return incremental messages since last query
-      const lines = getIncrementalConversation({ config: getConfig(), groupId });
+      const cursor = url.searchParams.get("cursor");
+      const clientId = url.searchParams.get("clientId");
+      const lines = getIncrementalConversation({ config: getConfig(), groupId, cursor, clientId });
       sendText(res, 200, lines);
       return true;
     }
@@ -208,6 +236,10 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
         sendJson(res, 400, { error: "missing group id" });
         return true;
       }
+      if (readOnly) {
+        sendReadOnlyError(res);
+        return true;
+      }
       if (req.method && req.method !== "POST") {
         sendJson(res, 405, { error: "method not allowed" });
         return true;
@@ -215,7 +247,7 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
       const config = getConfig();
       const group = ensureGroup(groupId, config);
       group.ended = true;
-      logger.info("Agents Conversion group ended", { groupId });
+      logger.info("Agents Conversation group ended", { groupId });
       sendJson(res, 200, { ok: true, groupId, ended: true });
       return true;
     }
@@ -224,6 +256,10 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
       const groupId = parseGroupId(pathname, basePath, "groups");
       if (!groupId) {
         sendJson(res, 400, { error: "missing group id" });
+        return true;
+      }
+      if (readOnly) {
+        sendReadOnlyError(res);
         return true;
       }
       if (req.method && req.method !== "POST") {
@@ -240,7 +276,7 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
         }
       }
       groups.delete(groupId);
-      logger.info("Agents Conversion group deleted", { groupId });
+      logger.info("Agents Conversation group deleted", { groupId });
       sendJson(res, 200, { ok: true, groupId, deleted: true });
       return true;
     }
@@ -302,30 +338,39 @@ export function createLocalGroupHttpHandler(basePath = "/agents-conversation") {
       const config = getConfig();
       const group = ensureGroup(groupId, config);
       const snapshot = getGroupSnapshot({ config, groupId });
+      const lastEvent = group.messages[group.messages.length - 1] ?? null;
+      const telemetry = buildGroupDebugTelemetry(group);
+      const channelConfig = getChannelConfig(config);
       const debug = {
         ...snapshot,
+        channelConfig,
         subscribers: group.subscribers.size,
         messageCount: group.messages.length,
-        lastIngest: group.lastIngest,
-        lastDispatch: group.lastDispatch,
-        lastReply: group.lastReply,
-        lastDispatchError: group.lastDispatchError,
-        lastDispatchResult: group.lastDispatchResult,
+        lastEvent,
+        ...telemetry,
         duplicateStats: group.duplicateStats,
         duplicateMessages: group.duplicateMessages,
         ended: group.ended,
       };
 
-      logger.debug("Agents Conversion debug snapshot", {
+      logger.debug("Agents Conversation debug snapshot", {
         groupId,
         agents: snapshot.agents.length,
         messageCount: debug.messageCount,
         subscribers: debug.subscribers,
+        lastEvent: debug.lastEvent
+          ? {
+              id: debug.lastEvent.id,
+              senderId: debug.lastEvent.senderId,
+              senderType: debug.lastEvent.senderType,
+              depth: debug.lastEvent.depth,
+            }
+          : null,
         lastIngest: debug.lastIngest,
-        lastDispatch: debug.lastDispatch,
-        lastReply: debug.lastReply,
-        lastDispatchError: debug.lastDispatchError,
-        lastDispatchResult: debug.lastDispatchResult,
+        lastDeliveredTurn: debug.lastDeliveredTurn,
+        lastReingestedFinal: debug.lastReingestedFinal,
+        lastDeliveryError: debug.lastDeliveryError,
+        lastDeliveryResult: debug.lastDeliveryResult,
         ended: debug.ended,
       });
 
@@ -344,13 +389,24 @@ function getConfig() {
   return config ?? {};
 }
 
-export async function ensureLocalServer({ config, port, bind }) {
+export async function ensureLocalServer({ config, port, bind, readOnly = false }) {
   serverState.config = config;
-  if (serverState.started) {
+  if (
+    serverState.started &&
+    serverState.port === port &&
+    serverState.bind === bind &&
+    serverState.readOnly === readOnly
+  ) {
     return;
   }
+  if (serverState.started) {
+    await shutdownLocalServer();
+    serverState.config = config;
+  }
 
-  const handler = createLocalGroupHttpHandler("/agents-conversation");
+  const handler = createLocalGroupHttpHandler("/agents-conversation", {
+    readOnly,
+  });
   serverState.server = createServer(async (req, res) => {
     try {
       await handler(req, res);
@@ -367,7 +423,10 @@ export async function ensureLocalServer({ config, port, bind }) {
   });
 
   serverState.started = true;
-  logger.info("Agents Conversion UI server listening", { port, bind });
+  serverState.bind = bind;
+  serverState.port = port;
+  serverState.readOnly = readOnly;
+  logger.info("Agents Conversation UI server listening", { port, bind, readOnly });
 }
 
 export async function shutdownLocalServer() {
@@ -381,5 +440,8 @@ export async function shutdownLocalServer() {
 
   serverState.server = null;
   serverState.started = false;
-  logger.info("Agents Conversion UI server stopped");
+  serverState.bind = null;
+  serverState.port = null;
+  serverState.readOnly = null;
+  logger.info("Agents Conversation UI server stopped");
 }
