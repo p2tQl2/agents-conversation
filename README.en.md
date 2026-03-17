@@ -390,7 +390,6 @@ If you discover a security vulnerability, describe impact and reproduction steps
 
 ## Related Resources
 
-- [OpenClaw Official Documentation](https://github.com/p2tQl2/openclaw)
 - [Node.js Documentation](https://nodejs.org/docs/)
 
 ---

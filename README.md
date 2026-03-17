@@ -382,7 +382,6 @@ A: 理论上无限制，但实际受限于系统资源和网络延迟。
 
 ## 相关资源
 
-- [OpenClaw 官方文档](https://github.com/p2tQl2/openclaw)
 - [Node.js 文档](https://nodejs.org/docs/)
 
 ---
